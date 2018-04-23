@@ -3,11 +3,8 @@
 #include "example.h"
 #include <openssl/sha.h>
 #include <pthread.h>
-#include <sched.h>
 #include <signal.h>
-#include <stdio.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 static const char*

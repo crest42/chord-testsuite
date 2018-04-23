@@ -37,7 +37,7 @@ clean:
 test: clean all
 	perl testsuite.pl $(TARGS)
 
-autotest: clean all
+autotest: fresh
 	perl testsuite.pl -n 8 -m 4 -v || exit
 	perl testsuite.pl -n 64 -m 256 -v || exit
 	perl testsuite.pl -n 8 -k 10 -v || exit
