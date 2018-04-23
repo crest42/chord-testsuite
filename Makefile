@@ -3,6 +3,12 @@ PHONY = all example lib
 WFLAGS := -Wall -Wextra -Werror
 all: example
 
+dep: 
+	@$(MAKE) --directory ../chord/ fresh
+	@$(MAKE) --directory ../CHash/ fresh
+
+fresh: clean dep all
+
 example: example.o
 	$(CC) example.o -o example -lpthread -lcrypto ../CHash/libchash.a ../chord/libchord.a $(CCFLAGS) $(WFLAGS)
 
@@ -14,3 +20,11 @@ example.o: example.c
 
 clean:
 	rm -rf *.a *.o example
+
+test: clean all
+	perl testsuite.pl $(TARGS)
+
+autotest: clean all
+	perl testsuite.pl -n 8 -m 4 -v || exit
+	perl testsuite.pl -n 64 -m 256 -v || exit
+	perl testsuite.pl -n 8 -k 10 -v || exit
