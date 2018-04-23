@@ -1,11 +1,24 @@
 PHONY = all example lib
 .DEFAULT_GOAL := all
 WFLAGS := -Wall -Wextra -Werror
+ifeq ($(DEBUGALL),yes)
+CHORDCCFLAGS=-DDEBUG_ENABLE
+CHASHCCFLAGS=-DDEBUG_ENABLE
+CCFLAGS=-DDEBUG_ENABLE
+endif
+
 all: example
 
-dep: 
-	@$(MAKE) --directory ../chord/ fresh
-	@$(MAKE) --directory ../CHash/ fresh
+dep:
+	@$(MAKE) CCFLAGS="$(CHORDCCFLAGS)" --directory ../chord/ fresh
+	@$(MAKE) CCFLAGS="$(CHASHCCFLAGS)"  --directory ../CHash/ fresh
+
+maketest: clean dep all clean all clean example fresh
+	@$(MAKE) CCFLAGS="-DDEBUG_ENABLE" --directory ../chord/ fresh
+	@$(MAKE) CCFLAGS="" --directory ../chord/ fresh
+	@$(MAKE) CCFLAGS="-DDEBUG_ENABLE"  --directory ../CHash/ fresh
+	@$(MAKE) CCFLAGS=""  --directory ../CHash/ fresh
+
 
 fresh: clean dep all
 

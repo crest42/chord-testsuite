@@ -34,8 +34,6 @@ log_level_to_string(enum log_level level)
 }
 
  char*
-msg_to_string(chord_msg_t msg);
- char*
 msg_to_string(chord_msg_t msg)
 {
   switch (msg) {
@@ -243,6 +241,8 @@ main(int argc, char* argv[])
     print_usage();
     return -1;
   }
+  default_out = stdout;
+
   char buf[INET6_ADDRSTRLEN];
   char nodeip[INET6_ADDRSTRLEN];
   memset(nodeip, 0, INET6_ADDRSTRLEN);
@@ -263,22 +263,23 @@ main(int argc, char* argv[])
     print_usage();
     return 1;
   }
+
   if (strcmp(argv[1], "slave") == 0) {
     memcpy(nodeip, argv[2], INET6_ADDRSTRLEN - 1);
     memcpy(masterip, argv[3], INET6_ADDRSTRLEN - 1);
-    if (argc > 3 && strcmp(argv[4], "silent") == 0) {
+    if (argc > 4 && strcmp(argv[4], "silent") == 0) {
       silent = true;
     }
-    if (argc > 3 && strcmp(argv[4], "interactive") == 0) {
+    if (argc > 4 && strcmp(argv[4], "interactive") == 0) {
       interactive = true;
     }
   } else if (strcmp(argv[1], "master") == 0) {
     memcpy(nodeip, argv[2], INET6_ADDRSTRLEN - 1);
     memcpy(masterip, argv[2], INET6_ADDRSTRLEN - 1);
-    if (argc > 2 && strcmp(argv[3], "silent") == 0) {
+    if (argc > 3 && strcmp(argv[3], "silent") == 0) {
       silent = true;
     }
-    if (argc > 2 && strcmp(argv[3], "interactive") == 0) {
+    if (argc > 3 && strcmp(argv[3], "interactive") == 0) {
       interactive = true;
     }
   }
@@ -288,6 +289,7 @@ main(int argc, char* argv[])
   if (stat("./log", &st) == -1) {
     mkdir("./log", 0700);
   }
+
   char* fname = malloc(strlen("./log/chord.log") + sizeof(pid_t) + 4);
   sprintf(fname, "./log/chord.%d.log", getpid());
   fp = fopen(fname, "w");
@@ -299,6 +301,7 @@ main(int argc, char* argv[])
   char* log_fname = malloc(strlen("/tmp/chord_out.log") + 6);
   memset(log_fname, 0, strlen("/tmp/chord_out.log") + 6);
   sprintf(log_fname, "/tmp/chord_out.%d.log", getpid());
+
 #ifdef DEBUG_ENABLE
   FILE* default_out = fopen(log_fname, "w");
   if (!default_out) {
