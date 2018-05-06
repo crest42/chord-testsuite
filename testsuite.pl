@@ -118,6 +118,7 @@ if($interactive) {
 						}
 						print ring_to_str()."\n";
 						print "Ring is in sync\n\n";
+						check_utilization();
 					} else {
 						print "Ring is not in sync $err sync errorss\n\n";
 					}
@@ -164,11 +165,12 @@ if($interactive) {
 		if($not_in_sync == 0 || $end > 0){
 			if(!defined($kill)) {
 				print "Ring in sync\n";
-				last;
+				check_utilization();
+				#last;
 			} else {
 				print "Ring in sync\n";
 				if(@childs == 1) {
-					last;
+					#last;
 				}
 			}
 		} else {
@@ -230,6 +232,7 @@ sub start_nodes {
 		my $hash_index = $nodes_exists + $i;
 		my $hex = sprintf("%X", $hash_index+1);
 		my $rnd_master = $childs[rand @childs]{addr};
+		#$rnd_master = $childs[0]{addr};
 		$childs[$hash_index]{addr} = "::$hex";
 		if($verbose) {
 			print "ifconfig $interface inet6 add $childs[$hash_index]{addr}\n";
@@ -276,10 +279,31 @@ sub ring_sort {
 	our @sorted =  sort { (defined($a->{me}) <=> defined($b->{me})) || $a->{me} <=> $b->{me} } @childs;
 }
 
+sub check_utilization {
+	my $ring_size = 2**16;
+	for(my $i = 0;$i<@childs;$i++) {
+		my $me = $childs[$i]{me};
+		my $pre = $childs[$i]{state}{$me}{pre};
+		my $diff = 0;
+		if($me < $pre) {
+			$diff = $ring_size-$pre + $me;
+		} else {
+			$diff = $me-$pre;
+		}
+		my $percentage = (100/$ring_size) * $diff;
+		print "$me is responsilbe for $percentage% of the Ring\n"
+	}
+}
 
 sub check_ring {
 	for(my $i = 0;$i<@childs;$i++) {
 		my $pid = $childs[$i]{pid};
+		my $cmd = $childs[$i]{cmd};
+		my $exit = system("pgrep -f '$cmd' > /dev/null");
+		if($exit != 0) {
+			print "Fatal: $pid exited\n";
+			$end = 1;
+		}
 		my $fname = $childs[$i]{outname};
 		if (-e $fname) {
 			chomp(my $last = `tail -1 $fname`);
@@ -312,7 +336,7 @@ sub check_ring {
 			if($i != $e) {
 				if(defined($me) && defined($sorted[$e]{me}) && $me == $sorted[$e]{me}) {
 					print "Collision found $i ($me) == $e ($sorted[$e]{me})\n";
-					$end = 1;
+					$not_in_sync++;
 				}
 			}
 		}

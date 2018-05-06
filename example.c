@@ -72,6 +72,12 @@ msg_to_string(chord_msg_t msg)
       return "MSG_TYPE_PUT";
     case MSG_TYPE_PUT_ACK:
       return "MSG_TYPE_PUT_ACK";
+      case MSG_TYPE_EXIT:
+      return "MSG_TYPE_EXIT";
+      case MSG_TYPE_EXIT_ACK:
+      return "MSG_TYPE_EXIT_ACK";
+      case MSG_TYPE_FIND_SUCCESSOR_LINEAR:
+      return "MSG_TYPE_FIND_SUCCESSOR_LINEAR";
     default:
       return "UNKNOWN";
   }
@@ -87,7 +93,7 @@ debug_printf(unsigned long t,
   struct node *mynode = get_own_node();
   FILE* out = default_out;
   if (level <= ERROR) {
-    out = stderr;
+    //out = stderr;
   }
 
   if ((level & DEBUG_LEVEL) != level) {
@@ -99,11 +105,19 @@ debug_printf(unsigned long t,
   for (int i = strlen(max_func_name); i < DEBUG_MAX_FUNC_NAME - 1; i++) {
     max_func_name[i] = ' ';
   }
+  nodeid_t suc = 0, pre = 0;
+  if(mynode->predecessor) {
+    pre = mynode->predecessor->id;
+  }
+  if(mynode->successor) {
+    suc = mynode->successor->id;
+  }
   fprintf(out,
-          "%lu: [%d|%d] [%s] %s: ",
+          "%lu: [%d<-%d->%d] [%s] %s: ",
           t,
+          pre,
           mynode->id,
-          _getpid(),
+          suc,
           log_level_to_string(level),
           max_func_name);
   va_list args;
@@ -246,7 +260,7 @@ main(int argc, char* argv[])
   char masterip[INET6_ADDRSTRLEN];
   memset(masterip, 0, INET6_ADDRSTRLEN);
   // bool master = false, slave = false;
-  struct node* partner = malloc(sizeof(struct node));
+  struct node* partner = calloc(1,sizeof(struct node));
   bool silent = false;
   bool interactive = false;
   if (!argv[1] ||
@@ -290,13 +304,14 @@ main(int argc, char* argv[])
   char* fname = malloc(strlen("./log/chord.log") + sizeof(pid_t) + 4);
   sprintf(fname, "./log/chord.%d.log", getpid());
   fp = fopen(fname, "w");
+  free(fname);
   if (!fp) {
     perror("open state");
     exit(0);
   }
 
-  char* log_fname = malloc(strlen("/tmp/chord_out.log") + 6);
-  memset(log_fname, 0, strlen("/tmp/chord_out.log") + 6);
+  char* log_fname = malloc(strlen("/tmp/chord_out.log") + 7);
+  memset(log_fname, 0, strlen("/tmp/chord_out.log") + 7);
   sprintf(log_fname, "/tmp/chord_out.%d.log", getpid());
 
 #ifdef DEBUG_ENABLE
@@ -306,6 +321,7 @@ main(int argc, char* argv[])
     exit(0);
   }
 #endif
+  free(log_fname);
 
   if (init_chord(nodeip) == CHORD_ERR) {
     return -1;
@@ -330,7 +346,7 @@ main(int argc, char* argv[])
   pthread_create(&mythread1, NULL, thread_wait_for_msg, (void*)mynode);
   if (!silent)
     printf("create periodic thread\n");
-  pthread_create(&mythread2, NULL, thread_periodic, (void*)mynode);
+  pthread_create(&mythread2, NULL, thread_periodic, (void*)partner);
 
   signal(SIGINT, sig_handler);
   int c = 0;
@@ -346,6 +362,7 @@ main(int argc, char* argv[])
         printf("Insert something into ring\n");
         nodeid_t id;
         put((unsigned char*)data, strlen(data), &id);
+        free(data);
         printf("Got %d\n",id);
       }
       if(strncmp(line,"get",3) == 0) {
@@ -383,6 +400,20 @@ main(int argc, char* argv[])
     c++;
   }
   free(partner);
+struct key** first_key = get_first_key();
+struct key *next = NULL;
+
+
+for(struct key *k = *first_key;k != NULL;) {
+  next = k->next;
+  if(k) {
+  free(k->data);
+  }
+  free(k);
+  k = next;
+
+}
+fclose(fp);
   printf("wait for eventloop thread\n");
   if (pthread_cancel(mythread1) != 0) {
     printf("Error cancel thread 1\n");
