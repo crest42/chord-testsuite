@@ -1,4 +1,4 @@
-#include "../chord/chord.h"
+#include "../chord/include/chord.h"
 #include "../CHash/chash.h"
 #include "example.h"
 #include <openssl/sha.h>
@@ -72,12 +72,28 @@ msg_to_string(chord_msg_t msg)
       return "MSG_TYPE_PUT";
     case MSG_TYPE_PUT_ACK:
       return "MSG_TYPE_PUT_ACK";
-      case MSG_TYPE_EXIT:
+    case MSG_TYPE_EXIT:
       return "MSG_TYPE_EXIT";
-      case MSG_TYPE_EXIT_ACK:
+    case MSG_TYPE_EXIT_ACK:
       return "MSG_TYPE_EXIT_ACK";
-      case MSG_TYPE_FIND_SUCCESSOR_LINEAR:
+    case MSG_TYPE_FIND_SUCCESSOR_LINEAR:
       return "MSG_TYPE_FIND_SUCCESSOR_LINEAR";
+    case MSG_TYPE_REFRESH_CHILD:
+      return "MSG_TYPE_REFRESH_CHILD";
+    case MSG_TYPE_REGISTER_CHILD:
+      return "MSG_TYPE_REGISTER_CHILD";
+    case MSG_TYPE_REGISTER_CHILD_EFULL:
+      return "MSG_TYPE_REGISTER_CHILD_EFULL";
+    case MSG_TYPE_REGISTER_CHILD_EWRONG:
+      return "MSG_TYPE_REGISTER_CHILD_EWRONG";
+    case MSG_TYPE_REGISTER_CHILD_OK:
+      return "MSG_TYPE_REGISTER_CHILD_OK";
+    case MSG_TYPE_REGISTER_CHILD_REDIRECT:
+      return "MSG_TYPE_REGISTER_CHILD_REDIRECT";
+    case MSG_TYPE_REFRESH_CHILD_OK:
+      return "MSG_TYPE_REFRESH_CHILD_OK";
+    case MSG_TYPE_REFRESH_CHILD_REDIRECT:
+      return "MSG_TYPE_REFRESH_CHILD_REDIRECT";
     default:
       return "UNKNOWN";
   }
@@ -208,8 +224,15 @@ debug_print_node(struct node* node, bool verbose)
   } else {
     printf("NULL");
   }
-  printf("\n");
-  if (verbose) {
+  printf("\nchilds:\n");
+  struct childs *c = get_childs();
+  for(int i = 0;i<CHORD_TREE_CHILDS;i++) {
+    printf("child %d is %d and age %d\n",i,c->child[i].child,(int)(time(NULL)-c->child[i].t));
+  }
+  struct aggregate *stats = get_stats();
+  printf("aggregation information: %d nodes, size: %d/%d\n",stats->nodes,stats->used,stats->available);
+  if (verbose)
+  {
     debug_print_fingertable();
     debug_print_successorlist();
     debug_print_keys();
