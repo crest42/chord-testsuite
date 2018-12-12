@@ -1,11 +1,56 @@
+#define _GNU_SOURCE
+#include <sys/time.h>
+#include <sys/resource.h>
+#define CHASH_BACKEND_LINKED
 #include "../chord/include/chord.h"
-#include "../CHash/chash.h"
+#include "../chord/include/chord.h"
+#include "../chord/include/bootstrap.h"
+#include "../chord/include/chord_util.h"
+#include "../CHash/include/chash_backend.h"
+#include "../CHash/include/chash_frontend.h"
+
 #include "example.h"
 #include <openssl/sha.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
+pthread_mutex_t mutex;
+extern uint32_t key_count;
+extern time_t time_start;
+extern time_t atm;
+extern size_t read_b;
+extern size_t write_b;
+extern struct childs childs;
+extern struct fingertable_entry fingertable[FINGERTABLE_SIZE];
+extern struct node successorlist[SUCCESSORLIST_SIZE];
+extern struct aggregate stats;
+pthread_t mythread1;
+pthread_t mythread2;
+struct rusage thread_periodic_id;
+struct rusage thread_wait_for_msg_id;
+
+extern uint32_t steps_reg;
+extern uint32_t steps_reg_find;
+
+extern unsigned long int w_start;
+extern unsigned long int w_atm;
+extern unsigned long int p_start;
+extern unsigned long int p_atm;
+
+static struct chash_backend b = {.get                   = chash_backend_get,
+                                 .put                   = chash_backend_put,
+                                 .backend_periodic_hook = NULL,
+                                 .periodic_data         = NULL};
+
+static struct chash_frontend f = {.get                    = chash_frontend_get,
+                                  .put                    = chash_frontend_put,
+                                  .put_handler            = handle_put,
+                                  .get_handler            = handle_get,
+                                  .frontend_periodic_hook = chash_frontend_periodic,
+                                  .periodic_data          = NULL,
+                                  .sync_handler           = handle_sync,
+                                  .sync_fetch_handler     = handle_sync_fetch};
 
 static const char*
 log_level_to_string(enum log_level level)
@@ -122,11 +167,11 @@ debug_printf(unsigned long t,
     max_func_name[i] = ' ';
   }
   nodeid_t suc = 0, pre = 0;
-  if(mynode->predecessor) {
-    pre = mynode->predecessor->id;
+  if(get_predecessor()) {
+    pre = get_predecessor()->id;
   }
-  if(mynode->successor) {
-    suc = mynode->successor->id;
+  if(get_successor()) {
+    suc = get_successor()->id;
   }
   fprintf(out,
           "%lu: [%d<-%d->%d] [%s] %s: ",
@@ -146,7 +191,6 @@ debug_printf(unsigned long t,
 static void
 debug_print_fingertable(void)
 {
-struct fingertable_entry *fingertable = get_fingertable();  
   struct node *mynode = get_own_node();
   printf("fingertable of %d:\n", mynode->id);
   for (int i = 0; i < FINGERTABLE_SIZE; i++) {
@@ -167,14 +211,12 @@ struct fingertable_entry *fingertable = get_fingertable();
 static void
 debug_print_successorlist(void)
 {
-    struct node *successorlist = get_successorlist();
-
-struct node *mynode = get_own_node();
+  struct node *mynode = get_own_node();
   printf("successorlist of %d:\n", mynode->id);
 
   int myid = -1;
-  if (!node_is_null(mynode->successor)) {
-    myid = mynode->successor->id;
+  if (!node_is_null(get_successor())) {
+    myid = get_successor()->id;
   }
   for (int i = 0; i < SUCCESSORLIST_SIZE; i++) {
     if (!node_is_null(&successorlist[i])) {
@@ -189,48 +231,30 @@ struct node *mynode = get_own_node();
 static void
 debug_print_keys(void)
 {
-  struct node *mynode = get_own_node();
-  struct key** first_key = get_first_key();
-  if (*first_key == NULL) {
-    printf("no keys yet\n");
-    return;
-  }
-  int i = 0;
-  printf("keylist of %d:\n", mynode->id);
-
-  for (struct key* start = *first_key; start != NULL; start = start->next) {
-    printf("Key %d: size: %lu id: %d owner: %d next: %p\n",
-           i,
-           start->size,
-           start->id,
-           start->owner,
-           start->next);
-    i++;
-  }
   return;
 }
 
 void
 debug_print_node(struct node* node, bool verbose)
 {
-  if (!node_is_null(node->predecessor)) {
-    printf("%d", node->predecessor->id);
+  if (!node_is_null(get_predecessor())) {
+    printf("%d", get_predecessor()->id);
   } else {
     printf("NULL");
   }
   printf("<-%d->", node->id);
-  if (node->successor) {
-    printf("%d", node->successor->id);
+  if (get_successor()) {
+    printf("%d", get_successor()->id);
   } else {
     printf("NULL");
   }
+  #ifdef CHORD_TREE_ENABLED
   printf("\nchilds:\n");
-  struct childs *c = get_childs();
   for(int i = 0;i<CHORD_TREE_CHILDS;i++) {
-    printf("child %d is %d and age %d\n",i,c->child[i].child,(int)(time(NULL)-c->child[i].t));
+    printf("child %d is %d and age %d\n",i,childs.child[i].child,(int)(time(NULL)-childs.child[i].t));
   }
-  struct aggregate *stats = get_stats();
-  printf("aggregation information: %d nodes, size: %d/%d\n",stats->nodes,stats->used,stats->available);
+  #endif
+  printf("aggregation information: %d nodes, size: %d/%d\n",stats.nodes,stats.used,stats.available);
   if (verbose)
   {
     debug_print_fingertable();
@@ -251,14 +275,146 @@ hash(unsigned char* out,
 }
 
 int sigint = false;
-pthread_t mythread1;
-pthread_t mythread2;
 
+static void getMemory(
+    int* currRealMem, int* peakRealMem,
+    int* currVirtMem, int* peakVirtMem) {
+
+    // stores each word in status file
+    char buffer[1024] = "";
+
+    // linux file contains this-process info
+    FILE* file = fopen("/proc/self/status", "r");
+
+    // read the entire file
+    while (fscanf(file, " %1023s", buffer) == 1) {
+
+        if (strcmp(buffer, "VmRSS:") == 0) {
+            fscanf(file, " %d", currRealMem);
+        }
+        if (strcmp(buffer, "VmHWM:") == 0) {
+            fscanf(file, " %d", peakRealMem);
+        }
+        if (strcmp(buffer, "VmSize:") == 0) {
+            fscanf(file, " %d", currVirtMem);
+        }
+        if (strcmp(buffer, "VmPeak:") == 0) {
+            fscanf(file, " %d", peakVirtMem);
+        }
+    }
+    fclose(file);
+}
+
+static void print_node(FILE *fp,bool csv){
+    struct node *node = get_own_node();
+    time_t t = time(NULL);
+    int share = 0;
+    if(csv) {
+      fprintf(fp,"%d,", (int)t);
+    } else {
+      fprintf(fp,"time:%d|", (int)t);
+    }
+    if (!node_is_null(get_predecessor()))
+    {
+      if(get_predecessor()->id > node->id) {
+        share = (CHORD_RING_SIZE - get_predecessor()->id) + node->id;
+      }
+      else if (get_predecessor()->id == node->id) {
+        share = CHORD_RING_SIZE;
+      }
+      else
+      {
+        share = node->id - get_predecessor()->id;
+      }
+      if (get_successor())
+      {
+        if(csv) {
+          fprintf(fp,
+                  "%d,%d,%d,",
+                  get_predecessor()->id,
+                  node->id,
+                  get_successor()->id);
+        } else {
+          fprintf(fp,
+                  "pre:%d|me:%d|suc:%d",
+                  get_predecessor()->id,
+                  node->id,
+                  get_successor()->id);
+        }
+      }
+      else
+      {
+        if(csv) {
+          fprintf(fp, "%d,%d,NULL,", get_predecessor()->id, node->id);
+        } else {
+          fprintf(fp, "pre:%d|me:%d|suc:NULL", get_predecessor()->id, node->id);
+        }
+      }
+    } else {
+      if (get_successor()) {
+        if(csv) {
+          fprintf(fp, "NULL,%d,%d,", node->id, get_successor()->id);
+        } else {
+          fprintf(fp, "pre:NULL|me:%d|suc:%d", node->id, get_successor()->id);
+        }
+      } else {
+        if(csv) {
+          fprintf(fp, "NULL,%d,NULL,", node->id);
+        } else {
+          fprintf(fp, "pre:NULL|me:%d|suc:NULL", node->id);
+        }
+      }
+    }
+    int currRealMem = 0, peakRealMem = 0, currVirtMem = 0, peakVirtMem = 0;
+    getMemory(&currRealMem,&peakRealMem,&currVirtMem,&peakVirtMem);
+    pthread_mutex_lock (&mutex);
+    if(csv) {
+      fprintf(fp,"%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%d,%d\n",
+        (int)read_b,
+        (int)write_b,
+        (int)(atm-time_start),
+        thread_wait_for_msg_id.ru_utime.tv_usec,
+        thread_wait_for_msg_id.ru_stime.tv_usec,
+        thread_periodic_id.ru_utime.tv_usec,
+        thread_periodic_id.ru_stime.tv_usec,
+        (w_atm-w_start),
+        (p_atm-p_start),
+        currRealMem,
+        peakRealMem,
+        currVirtMem,
+        peakVirtMem,
+        key_count,
+        share);
+    } else {
+      fprintf(fp,"|read_b:%d|write_b:%d|duration:%d|wait_cpu_u:%lu|wait_cpu_s:%lu|periodic_cpu_u:%lu|periodic_cpu_s:%lu|periodic_elapsed:%lu|wait_elapsed:%lu|currRealMem:%d|peakRealMem:%d|currVirtMem:%d|peakVirtMem:%d|key_count:%d|share:%d\n",
+        (int)read_b,
+        (int)write_b,
+        (int)(atm-time_start),
+        thread_wait_for_msg_id.ru_utime.tv_usec,
+        thread_wait_for_msg_id.ru_stime.tv_usec,
+        thread_periodic_id.ru_utime.tv_usec,
+        thread_periodic_id.ru_stime.tv_usec,
+        (w_atm-w_start),
+        (p_atm-p_start),
+        currRealMem,
+        peakRealMem,
+        currVirtMem,
+        peakVirtMem,
+        key_count,
+        share);
+    }
+    pthread_mutex_unlock (&mutex);
+}
+
+bool insert = false;
 void
 sig_handler(int signo)
 {
   if (signo == SIGINT) {
     sigint = true;
+  }
+  if (signo == SIGUSR1) {
+    insert = true;
   }
 }
 
@@ -271,7 +427,9 @@ print_usage(void)
 int
 main(int argc, char* argv[])
 {
-  if (argc < 1) {
+  printf("start\n");
+  if (argc < 1)
+  {
     print_usage();
     return -1;
   }
@@ -285,9 +443,8 @@ main(int argc, char* argv[])
   // bool master = false, slave = false;
   struct node* partner = calloc(1,sizeof(struct node));
   bool silent = false;
-  bool interactive = false;
   if (!argv[1] ||
-      !(strcmp(argv[1], "master") == 0 || strcmp(argv[1], "slave") == 0) ||
+      !(strcmp(argv[1], "master") == 0 || strcmp(argv[1], "test") == 0 || strcmp(argv[1], "slave") == 0) ||
       !argv[2] || !inet_pton(AF_INET6, argv[2], buf)) {
     print_usage();
     return 1;
@@ -297,27 +454,20 @@ main(int argc, char* argv[])
     print_usage();
     return 1;
   }
-
+  bool test = false;
   if (strcmp(argv[1], "slave") == 0) {
     memcpy(nodeip, argv[2], INET6_ADDRSTRLEN - 1);
     memcpy(masterip, argv[3], INET6_ADDRSTRLEN - 1);
-    if (argc > 4 && strcmp(argv[4], "silent") == 0) {
-      silent = true;
-    }
-    if (argc > 4 && strcmp(argv[4], "interactive") == 0) {
-      interactive = true;
-    }
   } else if (strcmp(argv[1], "master") == 0) {
     memcpy(nodeip, argv[2], INET6_ADDRSTRLEN - 1);
     memcpy(masterip, argv[2], INET6_ADDRSTRLEN - 1);
-    if (argc > 3 && strcmp(argv[3], "silent") == 0) {
-      silent = true;
-    }
-    if (argc > 3 && strcmp(argv[3], "interactive") == 0) {
-      interactive = true;
-    }
+  } else if (strcmp(argv[1], "test") == 0) {
+    test = true;
+    memcpy(nodeip, argv[2], INET6_ADDRSTRLEN - 1);
+    memcpy(masterip, argv[3], INET6_ADDRSTRLEN - 1);
   }
-
+  signal(SIGINT, sig_handler);
+  signal(SIGUSR1, sig_handler);
   FILE* fp;
   struct stat st;
   if (stat("./log", &st) == -1) {
@@ -332,7 +482,6 @@ main(int argc, char* argv[])
     perror("open state");
     exit(0);
   }
-
   char* log_fname = malloc(strlen("/tmp/chord_out.log") + 7);
   memset(log_fname, 0, strlen("/tmp/chord_out.log") + 7);
   sprintf(log_fname, "/tmp/chord_out.%d.log", getpid());
@@ -345,7 +494,6 @@ main(int argc, char* argv[])
   }
 #endif
   free(log_fname);
-
   if (init_chord(nodeip) == CHORD_ERR) {
     return -1;
   }
@@ -356,86 +504,75 @@ main(int argc, char* argv[])
   if (strcmp(nodeip, masterip) == 0) {
     if (!silent)
       printf("Create new ring\n");
-    add_node(NULL);
   } else {
     if (!silent)
       printf("no master node here connect to %s\n", masterip);
-    create_node(masterip, partner);
-    add_node(partner);
+    add_node_to_bslist_str(masterip);
+    printf("master added\n");
   }
-  init_chash();
+
+  chord_start();
+  init_chash(&b,&f);
+  pthread_mutex_init (&mutex, NULL);
   if (!silent)
     printf("create eventloop thread\n");
-  pthread_create(&mythread1, NULL, thread_wait_for_msg, (void*)mynode);
+  pthread_create(&mythread1, NULL, thread_wait_for_msg, (void*)&thread_wait_for_msg_id);
   if (!silent)
     printf("create periodic thread\n");
-  pthread_create(&mythread2, NULL, thread_periodic, (void*)partner);
+  pthread_create(&mythread2, NULL, thread_periodic, (void*)&thread_periodic_id);
 
-  signal(SIGINT, sig_handler);
+  printf("started\n");
   int c = 0;
-  char *line = NULL;
-  size_t size;
+    if(test) {
+    char *line = NULL;
+    size_t size;
+    unsigned char data[100];
+    unsigned char test[100];
+    while (!sigint)
+    {
+      if(getline(&line, &size, stdin) != -1) {
+         if(strncmp(line,"put",3) == 0) {
+           printf("insert 100 blocks of data\n");
+           for (int i = 0; i < 1000; i++)
+           {
+             printf("insert %d\n",i);
+             memset(data, i, sizeof(data));
+             chash_frontend_put(sizeof(int), (unsigned char *)&i, 0, sizeof(data), data);
+             printf("done\n");
+           }
+         }
+         else if (strncmp(line, "get", 3) == 0)
+         {
+           printf("fetch 100 blocks of data\n");
+           int suc = 0;
+           int fail = 0;
+           for (int i = 0; i < 1000; i++)
+           {
+             memset(data, 0, sizeof(data));
+             memset(test, i, sizeof(data));
+             chash_frontend_get(sizeof(int), (unsigned char *)&i, sizeof(data), data);
+             if(memcmp(data,test,sizeof(data)) == 0) {
+               suc++;
+             }
+             else
+             {
+               fail++;
+             }
+           }
+           printf("%d/100 successfull %d/100 fail\n", suc, fail);
+         }
+      }
+    }
+  }
   while (!sigint) {
-    if (interactive && getline(&line, &size, stdin) != -1) {
-      printf("read %lu bytes real: %lu\n",size,strlen(line));
-      if(strncmp(line,"put",3) == 0) {
-        char* data = malloc(100);
-        memset(data, 0, 100);
-        sprintf(data, "%s", line+strlen("put"));
-        printf("Insert something into ring\n");
-        nodeid_t id;
-        put((unsigned char*)data, strlen(data), &id);
-        free(data);
-        printf("Got %d\n",id);
-      }
-      if(strncmp(line,"get",3) == 0) {
-        nodeid_t id = 0;
-        sscanf (line+sizeof("get"),"%d",&id);
-        unsigned char buf[MAX_MSG_SIZE];
-        memset(buf, 0, sizeof(buf));
-        get(id, buf);
-        printf("read buf: %s\n", buf);
-      }
-      if(strcmp(line,"exit\n") == 0) {
-        break;
-      }
-    }
-    struct node* node = get_own_node();
-    if (!node_is_null(node->predecessor)) {
-      if (node->successor) {
-        fprintf(fp,
-                "%d|%d|%d\n",
-                node->predecessor->id,
-                node->id,
-                node->successor->id);
-      } else {
-        fprintf(fp, "%d|%d|NULL\n", node->predecessor->id, node->id);
-      }
-    } else {
-      if (node->successor) {
-        fprintf(fp, "NULL|%d|%d\n", node->id, node->successor->id);
-      } else {
-        fprintf(fp, "NULL|%d|NULL\n", node->id);
-      }
-    }
+    print_node(fp,true);
     fflush(fp);
+    print_node(stdout,false);
+    fflush(stdout);
     sleep(1);
     c++;
   }
   free(partner);
-struct key** first_key = get_first_key();
-struct key *next = NULL;
-
-
-for(struct key *k = *first_key;k != NULL;) {
-  next = k->next;
-  if(k) {
-  free(k->data);
-  }
-  free(k);
-  k = next;
-
-}
 fclose(fp);
   printf("wait for eventloop thread\n");
   if (pthread_cancel(mythread1) != 0) {
