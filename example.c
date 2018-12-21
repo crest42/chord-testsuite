@@ -369,7 +369,7 @@ static void print_node(FILE *fp,bool csv){
     getMemory(&currRealMem,&peakRealMem,&currVirtMem,&peakVirtMem);
     pthread_mutex_lock (&mutex);
     if(csv) {
-      fprintf(fp,"%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%d,%d\n",
+      fprintf(fp,"%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%d,%d,%d\n",
         (int)read_b,
         (int)write_b,
         (int)(atm-time_start),
@@ -384,9 +384,10 @@ static void print_node(FILE *fp,bool csv){
         currVirtMem,
         peakVirtMem,
         key_count,
-        share);
+        share,
+        stats.depth);
     } else {
-      fprintf(fp,"|read_b:%d|write_b:%d|duration:%d|wait_cpu_u:%lu|wait_cpu_s:%lu|periodic_cpu_u:%lu|periodic_cpu_s:%lu|periodic_elapsed:%lu|wait_elapsed:%lu|currRealMem:%d|peakRealMem:%d|currVirtMem:%d|peakVirtMem:%d|key_count:%d|share:%d\n",
+      fprintf(fp,"|read_b:%d|write_b:%d|duration:%d|wait_cpu_u:%lu|wait_cpu_s:%lu|periodic_cpu_u:%lu|periodic_cpu_s:%lu|periodic_elapsed:%lu|wait_elapsed:%lu|currRealMem:%d|peakRealMem:%d|currVirtMem:%d|peakVirtMem:%d|key_count:%d|share:%d|depth:%d\n",
         (int)read_b,
         (int)write_b,
         (int)(atm-time_start),
@@ -401,7 +402,8 @@ static void print_node(FILE *fp,bool csv){
         currVirtMem,
         peakVirtMem,
         key_count,
-        share);
+        share,
+        stats.depth);
     }
     pthread_mutex_unlock (&mutex);
 }
@@ -526,41 +528,67 @@ main(int argc, char* argv[])
     if(test) {
     char *line = NULL;
     size_t size;
+    int test_size = 1000;
     unsigned char data[100];
     unsigned char test[100];
+    unsigned char h[HASH_DIGEST_SIZE];
+    nodeid_t add[test_size];
+    int is[test_size];
     while (!sigint)
     {
       if(getline(&line, &size, stdin) != -1) {
          if(strncmp(line,"put",3) == 0) {
-           printf("insert 100 blocks of data\n");
-           for (int i = 0; i < 1000; i++)
+           printf("insert %d blocks of data\n",test_size);
+           int x = 0;
+           for (int i = 0; i < test_size; i++)
            {
-             printf("insert %d\n",i);
-             memset(data, i, sizeof(data));
-             chash_frontend_put(sizeof(int), (unsigned char *)&i, 0, sizeof(data), data);
-             printf("done\n");
-           }
-         }
-         else if (strncmp(line, "get", 3) == 0)
-         {
-           printf("fetch 100 blocks of data\n");
-           int suc = 0;
-           int fail = 0;
-           for (int i = 0; i < 1000; i++)
-           {
-             memset(data, 0, sizeof(data));
-             memset(test, i, sizeof(data));
-             chash_frontend_get(sizeof(int), (unsigned char *)&i, sizeof(data), data);
-             if(memcmp(data,test,sizeof(data)) == 0) {
-               suc++;
-             }
-             else
+             int col = 0;
+             memset(data, x, sizeof(data));
+             hash(h, (unsigned char *)&x, sizeof(x), HASH_DIGEST_SIZE);
+             nodeid_t id = get_mod_of_hash(h, CHORD_RING_SIZE);
+             for (int e = 0; e < i; e++)
              {
-               fail++;
+               if(add[e] == id) {
+                 col = 1;
+                 break;
+               }
              }
+             if(col == 1) {
+                 x++;
+                 i--;
+                 continue;
+             }
+             printf("insert %d id: %d\n",i,id);
+             is[i] = x;
+             add[i] = id;
+             chash_frontend_put(sizeof(int), (unsigned char *)&x, 0, sizeof(data), data);
+             x++;
            }
-           printf("%d/100 successfull %d/100 fail\n", suc, fail);
          }
+           else if (strncmp(line, "get", 3) == 0)
+           {
+             printf("fetch %d blocks of data\n",test_size);
+             int suc = 0;
+             int fail = 0;
+             for (int i = 0; i < test_size; i++)
+             {
+               memset(data, is[i] + 1, sizeof(data));
+               memset(test, is[i], sizeof(data));
+               chash_frontend_get(sizeof(int), (unsigned char *)&is[i], sizeof(data), data);
+               if (memcmp(data, test, sizeof(data)) == 0)
+               {
+                 printf("%d (%d = %u) true\n", i,is[i],add[i]);
+                 suc++;
+               }
+               else
+               {
+                 printf("%d (%d = %u) false\n", i,is[i],add[i]);
+                 fail++;
+               }
+             }
+             printf("%d/%d successfull %d/%d fail\n", suc, test_size,fail,test_size);
+             print_node(fp,true);
+           }
       }
     }
   }

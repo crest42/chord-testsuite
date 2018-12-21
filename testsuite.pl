@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Data::Dumper;
 use Getopt::Long;
-use POSIX qw(ceil);
+use POSIX qw(ceil :sys_wait_h);
 use Scalar::Util qw(looks_like_number);
 use IO::Select;
 #use Forks::Super;
@@ -16,10 +16,9 @@ use IO::Handle;
 our $grid_max_rows = 20;
 our $grid_active = 0;
 our $grid_max = 0;
-our (%window_param,@childs, $focused, $menu, @grid, $window, $chordui, $statusbar, $statsbar, $ui, $h, $w);
-our ($menu_start, $menu_h, $grid_start, $grid_h,$statusbar_start,$statusbar_h,$statsbar_start,$statsbar_h);
+our (%window_param,@childs, @dead, $focused, $menu, @grid, $window, $chordui, $statusbar, $statsbar, $ui, $h, $w);
+our ($menu_start, $menu_h, $grid_start, $grid_h, $grid_w,$statusbar_start,$statusbar_h,$statsbar_start,$statsbar_h);
 our $finished = 0;
-our $ui;
 #use bignum;
 my $nodes;
 my @addr;
@@ -151,6 +150,7 @@ sub setup_curses {
 	$statsbar_h = $h-$statsbar_start;
 	$grid_start = 2;
 	$grid_h = $statsbar_start-2;
+	$grid_w = $w - 2;
 	$ui->set_timer( 'std_periodic', \&periodic , 2);
 	use Curses::UI;
 
@@ -177,24 +177,26 @@ sub add_grid {
         'Grid',
 		-y 			  => $grid_start,
         -height       => $grid_h,
-        -width        => -1,
-        -editable     => 1,
+        -width        => $grid_w,
+        -editable     => 0,
         -border       => 1,
-        # -bg       => "blue",
+		#-rows         => 20,
         # -fg       => "white",
     );
 	$grid[$grid_active]{grid}->set_binding(\&dump_child, KEY_ENTER());
 	$grid[$grid_active]{grid}->set_binding(\&curses_kill_child, 'd');
-
+	for(my $i = 1;$i<=1;$i++) {
+		$grid[$grid_active]{grid}->add_row("row$i");
+	}
     $grid[$grid_active]{grid}->add_cell(
         "node_id",
         -width => 5,
-        -label => "Node ID"
+        -label => "ID"
     );
 
 	$grid[$grid_active]{grid} ->add_cell(
         "last_update",
-        -width => 10,
+        -width => 12,
         -label => "Time"
     );
 
@@ -281,17 +283,9 @@ sub add_grid {
         -label => "Share"
     );
 	$grid[$grid_active]{grid}->add_cell(
-        "debug",
+        "depth",
         -width => 10,
-        -label => "Debug"
-    );
-	$grid[$grid_active]{grid}->add_row(
-            "row0",
-            # -fg    => 'black',
-            # -bg    => 'yellow',
-            -cells => {
-                node_id     => "",
-            }
+        -label => "Tree"
     );
 
 	$grid[$grid_active]{row_count} = 1;
@@ -462,7 +456,7 @@ my $str = Dumper(\%values);
 if(!(exists $values{node_id} && defined $values{node_id} && length($values{node_id})>1 )) {
 	return;
 }
-my $id = substr($values{node_id},1,length($values{node_id}));
+my $id = int(substr($values{node_id},1,length($values{node_id})))-1;
 if($id >= 0) {
 	$str = Dumper(sort($childs[$id]));
 } else {
@@ -486,9 +480,12 @@ sub kill_fraction {
                 -question   => "How Many?"
 	);
 	if(looks_like_number($return) && $return > 0) {
+		my @victims = [];
 		for(my $i = 0;$i<$return;$i++) {
-			my $rnd_kill = rand @childs;
+			my $already_victimized = 0;
+			my $rnd_kill = int(rand @childs);
 			kill_child($rnd_kill);
+			
 		}
 	}
 	return 0;
@@ -502,7 +499,7 @@ sub curses_kill_child {
 	if(!(exists $values{node_id} && defined $values{node_id} && length($values{node_id})>1 )) {
 		return;
 	}
-	my $id = substr($values{node_id},1,length($values{node_id}));
+	my $id = int(substr($values{node_id},1,length($values{node_id})))-1;
 	if($id < 0) {
 		return;
 	}
@@ -519,13 +516,30 @@ sub curses_kill_child {
 
 sub kill_child() {
 	my ($id) = @_;
-	print $id;
 	if(defined($childs[$id])) {
+		my $row = $childs[$id]{row};
+		my $gridnr = $childs[$id]{gridnr};
+		my $rownr  = $childs[$id]{rownr};
+		my $g = $grid[$gridnr]{grid}{-rowid2idx};
+		my $position = $g->{$row->{-id}};
+		print STDERR "Kill node $id " . $childs[$id]{me} . " grid $gridnr row: $rownr pos: $position\n";
 		system("kill " . $childs[$id]{pid});
-		$grid[$grid_active]{grid}->delete_row("row$id");
-		splice(@childs, $id, 1);
-	}
+		if(defined $row) {
+			if(defined $position) {
+				$grid[$gridnr]{grid}->delete_row($position);
+			}
+			else {
+				$grid[$gridnr]{grid}->delete_row($position);
+			}
 
+		} else {
+			my $max = $grid[$childs[$id]{gridnr}]{grid}->rows_count;
+			print STDERR "Grid $gridnr row $rownr not defined grows: $max\n";
+		}
+		print STDERR "splice $id\n";
+		splice(@childs, $id, 1);
+		periodic();
+	}
 }
 
 sub periodic {
@@ -535,10 +549,11 @@ sub periodic {
 	}
 	my $nodes_exists = @childs;
 	#$chordui->draw();
+	update_nodes();
 	update_pointer();
 	ring_sort();
-	update_nodes();
 	for(my $i = 0;$i<$nodes_exists;$i++) {
+		my $rownr  = $childs[$i]{rownr};
 		my $s = '';
 		my $p = '';
 		my $t = '';
@@ -550,8 +565,8 @@ sub periodic {
 		my $psys = 0;
 		my $wuser = 0;
 		my $wsys = 0;
-		my $debug = '';
 		my $share = 0;
+		my $depth = 0;
 		if(defined $childs[$i]{details} && ref($childs[$i]{details}) eq 'HASH') {
 			if(defined $childs[$i]{details}{suc}) {
 				$s = $childs[$i]{details}{suc};
@@ -566,9 +581,13 @@ sub periodic {
 				$self = $childs[$i]{details}{me};
 			}
 			if(defined $childs[$i]{details}{read_b}) {
-				$overall_b = sprintf("%.2f B/s", $read_b+$write_b);
-				$read_b = sprintf("%.2f B/s", $read_b);
-				$write_b = sprintf("%.2f B/s", $write_b);
+				my $duration = 1;
+				if($childs[$i]{details}{duration} > 0) {
+					$duration = $childs[$i]{details}{duration};
+				}
+				$overall_b = sprintf("%.2f B/s", ($childs[$i]{details}{read_b}+$childs[$i]{details}{write_b})/$duration);
+				$read_b = sprintf("%.2f B/s", $childs[$i]{details}{read_b}/$duration);
+				$write_b = sprintf("%.2f B/s",$childs[$i]{details}{write_b}/$duration);
 			}
 			if(defined $childs[$i]{details}{wait_cpu_u}) {
 				my $cpns =  0;
@@ -601,14 +620,19 @@ sub periodic {
 			if(defined $childs[$i]{details}{share}) {
 				$share = $childs[$i]{details}{share};
 			}
+			if(defined $childs[$i]{details}{depth}) {
+				$depth = int($childs[$i]{details}{depth});
+			}
 		}
 		my $target = int($i/$grid_max_rows);
-		my $real_pos = $i % $grid_max_rows;
+		my $real_pos = ($i % $grid_max_rows)+1;
+		$childs[$i]{gridnr} = $target;
+		$childs[$i]{rownr}  = $real_pos;
 		if($target == $grid_max) {
 			add_grid();
 		}
 		if( not defined $grid[$target]{grid}->get_row("row$real_pos")) {
-			$grid[$target]{grid}->add_row(
+			$childs[$i]{row} = $grid[$target]{grid}->add_row(
             "row$real_pos",
             # -fg    => 'black',
             # -bg    => 'yellow',
@@ -630,6 +654,7 @@ sub periodic {
 				w_user => $wuser,
 				w_sys  => $wsys,
 				share  => $share,
+				depth  => $depth,
 				debug =>$debug,
             }
 			);
@@ -653,8 +678,10 @@ sub periodic {
 								w_user 		=> $wuser,
 								w_sys  		=> $wsys,
 								share 	 	=> $share,
+								depth 	 	=> $depth,
 								debug    	=> $debug,
 								);
+			$childs[$i]{row} = $grid[$target]{grid}->get_row("row$real_pos");
 		}
 	}
 	update_statusbar();
@@ -663,7 +690,7 @@ sub periodic {
 	my $run = $finished-$start;
 	$p++;
 	if($auto == 1 && $p % 5 == 0) {
-		start_nodes(1,$lo,2,1);
+		start_nodes(1,$lo,0,1);
 	}
 	return 0;
 }
@@ -709,6 +736,7 @@ sub get_statsbar {
 	my $csv = @childs . ',';
 	my $h = 'nodes,';
 	my $min_share = 9999999;
+	my $max_depth = 0;
 	my $max_share = 0;
 	for (my $i = 0;$i<@childs;$i++) {
 		if(defined $childs[$i]{details}) {
@@ -720,9 +748,14 @@ sub get_statsbar {
 					$min_share = $childs[$i]{details}{share};
 				}
 			}
+			if(defined $childs[$i]{details}{depth} && $childs[$i]{details}{depth} != 0) {
+				if($childs[$i]{details}{depth} > $max_depth) {
+					$max_depth = $childs[$i]{details}{depth};
+				}
+			}
 			foreach my $key (keys %{$childs[$i]{details}})
 			{
-				if($childs[$i]{details}{$key} eq '') {
+				if($childs[$i]{details}{$key} eq 'NULL') {
 					next;
 				}
 				if(!defined $results{$key}) {
@@ -741,8 +774,10 @@ sub get_statsbar {
 
 	$results{min_share} = $min_share;
 	$count{min_share} = 1;
-	$count{max_share} = 1;
 	$results{max_share} = $max_share;
+	$count{max_share} = 1;
+	$results{max_depth} = $max_depth;
+	$count{max_depth} = 1;
 	my $size = keys %results;
 	my $kpl = int(($size/$statsbar_h))+1;
 
@@ -814,7 +849,7 @@ sub curses_get_node_number {
 					-title     => "Nodes Started", 
 					-buttons   => ['ok'],
 		);
-		curses_start_nodes($nodes,$lo,2,1);
+		curses_start_nodes($nodes,$lo,0,1);
 	} else {
 		$return = $ui->dialog(
 					-message   => "NaN",
@@ -838,7 +873,7 @@ sub start_nodes {
 	if($count > 1) {
 		$ui->progress(
    	 		-max => $count,
-    		-message => "Starting nodes...",
+    		-message => "Starting $count nodes...",
 		);
 	}
 	for(my $i = 0;$i<$count && $end == 0;$i++) {
@@ -846,7 +881,7 @@ sub start_nodes {
 			$ui->setprogress($i);
 		}
 		my $id = $nodes_exists + $i;
-		my $rnd_master = $childs[rand @childs]{addr};
+		my $rnd_master_addr = '';
 		my $hex = sprintf("%X", $id+1);
 		$childs[$id]{addr} = "::$hex";
 		$childs[$id]{me} = 0;
@@ -855,7 +890,15 @@ sub start_nodes {
 		}
 		$childs[$id]{interface} = "tap$id";
 		if(not defined $childs[$id]{master_addr}) {
-			$childs[$id]{master_addr} = $rnd_master;
+			while(1) {
+				my $rnd_master = rand @childs;
+				if(defined $childs[$rnd_master] && defined $childs[$rnd_master]{starttime} && (time()-$childs[$rnd_master]{starttime}) > 4) {
+					$rnd_master_addr =  $childs[$rnd_master]{addr};
+					last;
+				}
+				sleep(1);
+			}
+			$childs[$id]{master_addr} = $rnd_master_addr;
 		}
 
 		system("sudo ifconfig $interface inet6 add $childs[$id]{addr} > /dev/null 2>&1");
@@ -871,8 +914,9 @@ sub start_nodes {
 		if($id == 0) {
 			$childs[$id]{cmd} = "./example master $childs[$id]{addr} silent";
 		} else {
-			$childs[$id]{cmd} = "./example slave $childs[$id]{addr} $rnd_master silent";
+			$childs[$id]{cmd} = "./example slave $childs[$id]{addr} $rnd_master_addr silent";
 		}
+		$childs[$id]{starttime} = time();
 		if($verbose) {
 			print "$childs[$id]{cmd}\n";
 		}
@@ -881,6 +925,7 @@ sub start_nodes {
 		my $cmd = $childs[$id]{cmd};
 		if ($childs[$id]{pid}  = open($childs[$id]{out} , "$cmd|")) {
 			$childs[$id]{out}->autoflush(1);
+			$childs[$id]{out}->blocking(0);
 			my $fh = $childs[$id]{out};
 
  		} else {
@@ -962,10 +1007,12 @@ sub curses_ring_status() {
 }
 sub update_pointer() {
 	for(my $i = 0;$i<@childs;$i++) {
-		my @line;
 		my $fh = $childs[$i]{out};
+		if(!defined $fh) {
+			print STDERR "fh of $i is not defined\n";
+		}
+		my @line;
 		my $tell = tell($fh);
-		$fh->blocking(0);  
 		while (my $line = <$fh>)
 		{
 			$tell = $line;
@@ -985,13 +1032,12 @@ sub update_pointer() {
 }
 
 sub update_nodes() {
-	for(my $i = 0;$i<@childs;$i++) {
-		
-	}
+	return 0;
 }
 
 sub check_ring {
 	my ($details) = @_;
+	update_nodes();
 	update_pointer();
 	ring_sort();
 	my $not_in_sync = 0;
@@ -1029,7 +1075,7 @@ sub check_ring {
 			}
 		}
 
-		if($pre eq '' || $pre != $real_pre) {
+		if($pre eq 'NULL' || $pre != $real_pre) {
 			$not_in_sync++;
 			my $n = -1;
 			if(defined  $c[$i]{details}{me}) {

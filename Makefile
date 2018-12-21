@@ -1,6 +1,6 @@
 PHONY = all example lib
 .DEFAULT_GOAL := all
-WFLAGS := -Wall -Wextra -Werror
+WFLAGS := -Wall -Wextra -Werror -g
 ifeq ($(DEBUGALL),yes)
 CHORDCCFLAGS=-DDEBUG_ENABLE
 CHASHCCFLAGS=-DDEBUG_ENABLE
