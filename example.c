@@ -29,6 +29,8 @@ pthread_t mythread1;
 pthread_t mythread2;
 struct rusage thread_periodic_id;
 struct rusage thread_wait_for_msg_id;
+struct rusage thread_periodic_id_s;
+struct rusage thread_wait_for_msg_id_s;
 
 extern uint32_t steps_reg;
 extern uint32_t steps_reg_find;
@@ -368,15 +370,19 @@ static void print_node(FILE *fp,bool csv){
     int currRealMem = 0, peakRealMem = 0, currVirtMem = 0, peakVirtMem = 0;
     getMemory(&currRealMem,&peakRealMem,&currVirtMem,&peakVirtMem);
     pthread_mutex_lock (&mutex);
+    long unsigned pu = (thread_periodic_id.ru_utime.tv_sec*1000000 + thread_periodic_id.ru_utime.tv_usec) - (thread_periodic_id_s.ru_utime.tv_sec + thread_periodic_id_s.ru_utime.tv_usec);
+    long unsigned ps = (thread_periodic_id.ru_stime.tv_sec*1000000 + thread_periodic_id.ru_stime.tv_usec) - (thread_periodic_id_s.ru_stime.tv_sec + thread_periodic_id_s.ru_stime.tv_usec);
+    long unsigned wu = (thread_wait_for_msg_id.ru_utime.tv_sec*1000000 + thread_wait_for_msg_id.ru_utime.tv_usec) - (thread_wait_for_msg_id_s.ru_utime.tv_sec + thread_wait_for_msg_id_s.ru_utime.tv_usec);
+    long unsigned ws = (thread_wait_for_msg_id.ru_stime.tv_sec*1000000 + thread_wait_for_msg_id.ru_stime.tv_usec) - (thread_wait_for_msg_id_s.ru_stime.tv_sec + thread_wait_for_msg_id_s.ru_stime.tv_usec);
     if(csv) {
       fprintf(fp,"%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%d,%d,%d\n",
         (int)read_b,
         (int)write_b,
         (int)(atm-time_start),
-        thread_wait_for_msg_id.ru_utime.tv_usec,
-        thread_wait_for_msg_id.ru_stime.tv_usec,
-        thread_periodic_id.ru_utime.tv_usec,
-        thread_periodic_id.ru_stime.tv_usec,
+        wu,
+        ws,
+        pu,
+        ps,
         (w_atm-w_start),
         (p_atm-p_start),
         currRealMem,
@@ -391,10 +397,10 @@ static void print_node(FILE *fp,bool csv){
         (int)read_b,
         (int)write_b,
         (int)(atm-time_start),
-        thread_wait_for_msg_id.ru_utime.tv_usec,
-        thread_wait_for_msg_id.ru_stime.tv_usec,
-        thread_periodic_id.ru_utime.tv_usec,
-        thread_periodic_id.ru_stime.tv_usec,
+        wu,
+        ws,
+        pu,
+        ps,
         (w_atm-w_start),
         (p_atm-p_start),
         currRealMem,
@@ -408,7 +414,15 @@ static void print_node(FILE *fp,bool csv){
     pthread_mutex_unlock (&mutex);
 }
 
-bool insert = false;
+static void reset_stats() {
+  read_b = 0;
+  write_b = 0;
+  time_start = time(NULL);
+  atm        = time(NULL);
+  memcpy(&thread_wait_for_msg_id_s,&thread_wait_for_msg_id,sizeof(thread_wait_for_msg_id_s));
+  memcpy(&thread_periodic_id_s,&thread_periodic_id,sizeof(thread_periodic_id));
+}
+
 void
 sig_handler(int signo)
 {
@@ -416,7 +430,7 @@ sig_handler(int signo)
     sigint = true;
   }
   if (signo == SIGUSR1) {
-    insert = true;
+    reset_stats();
   }
 }
 
@@ -429,14 +443,15 @@ print_usage(void)
 int
 main(int argc, char* argv[])
 {
-  printf("start\n");
+  printf("start plica level %d\n",REPLICAS);
   if (argc < 1)
   {
     print_usage();
     return -1;
   }
   default_out = stdout;
-
+  memset(&thread_wait_for_msg_id_s,0,sizeof(thread_wait_for_msg_id_s));
+  memset(&thread_periodic_id_s,0,sizeof(thread_periodic_id_s));
   char buf[INET6_ADDRSTRLEN];
   char nodeip[INET6_ADDRSTRLEN];
   memset(nodeip, 0, INET6_ADDRSTRLEN);
@@ -528,7 +543,7 @@ main(int argc, char* argv[])
     if(test) {
     char *line = NULL;
     size_t size;
-    int test_size = 1000;
+    int test_size = 100;
     unsigned char data[100];
     unsigned char test[100];
     unsigned char h[HASH_DIGEST_SIZE];

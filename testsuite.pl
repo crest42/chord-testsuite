@@ -376,7 +376,14 @@ sub add_keybindings_generic {
 	$ui->set_binding( sub{ curses_verbose() } , "v");
 	$ui->set_binding( sub{ curses_restart() } , "f");
 	$ui->set_binding( sub{ kill_fraction() } , "k");
+	$ui->set_binding( sub{ reset_stats() } , "r");
 	$ui->set_binding( sub{ auto_start() } , "t");
+}
+
+sub reset_stats {
+	for(my $i = 0;$i<@childs;$i++) {
+		kill 'SIGUSR1', $childs[$i]{pid};
+	}
 }
 
 sub leave { kill_nodes(); exit; }
